@@ -140,6 +140,8 @@ class CameraFragment : Fragment() {
         private val J_OK = Judgement("OK", Color.rgb(255, 210, 80), 1, 50)
     }
 
+    private val localizacaoController = LocalizacaoController(this)
+
     private var mode = Mode.CHECKING
 
     private var container: FrameLayout? = null
@@ -311,6 +313,16 @@ class CameraFragment : Fragment() {
 
         iniciarMusica()
         checkAvailability()
+
+        val parent = container?.parent as? ViewGroup
+
+        if (parent != null) {
+            localizacaoController.conectar(parent) { arquivo ->
+                sharedViewModel.selectModel(arquivo)
+            }
+
+            placeButton?.bringToFront()
+        }
     }
 
     override fun onResume() {
