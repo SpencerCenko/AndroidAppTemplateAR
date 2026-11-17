@@ -5,6 +5,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/horror_black"
     tools:context=".ui.CameraFragment">
 
     <!-- Receberá o ArSceneView ou o SceneView criado pelo fragmento. -->
@@ -17,6 +18,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- O CameraFragment copia esta imagem para o HUD e esconde esta View. -->
     <ImageView
         android:id="@+id/titleImage"
         android:layout_width="150dp"
@@ -31,15 +33,21 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- O CameraFragment recria este botão no HUD e esconde este. -->
     <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
         android:id="@+id/place"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginBottom="10dp"
         android:enabled="false"
+        android:fontFamily="sans-serif-condensed"
+        android:letterSpacing="0.14"
         android:text="Posicionar"
         android:textAlignment="center"
+        android:textColor="@color/horror_bone"
         android:textSize="15sp"
+        android:textStyle="bold"
+        app:backgroundTint="@color/horror_blood_dark"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />

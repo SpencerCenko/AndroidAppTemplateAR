@@ -70,6 +70,16 @@ class LocalizacaoController(
             latitude = -25.094904,
             longitude = -50.163075
         ),
+        // Muffato
+        Lugar(
+            latitude = -26.094904,
+            longitude = -51.163075
+        ),
+        // IFPR
+        Lugar(
+            latitude = -26.094304,
+            longitude = -51.160075
+        ),
 
         // Parque Estadual de Vila Velha
         Lugar(

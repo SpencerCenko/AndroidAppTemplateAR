@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="horror_black">#0A0A0D</color>
+    <color name="horror_surface">#121218</color>
+    <color name="horror_blood">#E11D2E</color>
+    <color name="horror_blood_dark">#6C0614</color>
+    <color name="horror_blood_ripple">#33E11D2E</color>
+    <color name="horror_bone">#F0E8E4</color>
+    <color name="horror_muted">#8A8080</color>
+    <color name="horror_parchment">#E6DDD6</color>
+</resources>

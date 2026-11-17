@@ -5,34 +5,59 @@
     android:id="@+id/rootLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@drawable/bg_horror_screen"
     android:orientation="vertical"
-    android:background="@android:color/white"
     tools:context=".ui.ChangeObjectFragment">
-
 
     <ImageView
         android:id="@+id/titleImage"
         android:layout_width="150dp"
         android:layout_height="wrap_content"
-        android:src="@mipmap/ic_launcher_round"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="14dp"
         android:adjustViewBounds="true"
-        android:layout_marginVertical="10dp"
         android:background="@android:color/transparent"
-        android:layout_gravity="center_horizontal" />
+        android:contentDescription="@string/app_name"
+        android:src="@mipmap/ic_launcher_round" />
 
+    <TextView
+        android:id="@+id/horrorSubtitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="6dp"
+        android:fontFamily="sans-serif-condensed"
+        android:letterSpacing="0.22"
+        android:text="ESCOLHA O QUE VAI TE ASSOMBRAR"
+        android:textColor="@color/horror_muted"
+        android:textSize="11sp"
+        android:textStyle="bold" />
 
-
+    <View
+        android:layout_width="120dp"
+        android:layout_height="2dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="10dp"
+        android:layout_marginBottom="6dp"
+        android:background="#99C1121F" />
 
     <ScrollView
         android:id="@+id/scrollView"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1">
+        android:layout_weight="1"
+        android:clipToPadding="false"
+        android:overScrollMode="never"
+        android:scrollbars="none">
 
+        <!-- Os modelos são adicionados aqui pelo ChangeObjectFragment.
+             Cartão de pergaminho: mantém legível o texto escuro atual das linhas. -->
         <LinearLayout
             android:id="@+id/categoryContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_margin="16dp"
+            android:background="@drawable/bg_horror_card"
             android:orientation="vertical"
             android:padding="16dp" />
     </ScrollView>
@@ -42,6 +67,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
+        android:indeterminateTint="@color/horror_blood"
         android:visibility="gone" />
 
 </LinearLayout>
