@@ -14,6 +14,16 @@ import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
+import android.graphics.LinearGradient
+import android.graphics.RectF
+import android.graphics.Shader
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.TextUtils
+import android.text.style.ForegroundColorSpan
+import android.widget.ImageView
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
@@ -41,7 +51,6 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
-import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.HitResult
@@ -100,6 +109,14 @@ class CameraFragment : Fragment() {
         private const val PATTERN_MAX = 5
         private const val PATTERN_GAP_MS = 500L
 
+        // Distância mínima (em dp) entre os centros dos círculos na tela
+        private const val MIN_CIRCLE_GAP_DP = 150
+
+        // Distância do próximo círculo da sequência em relação ao anterior:
+        // entre NEXT_CIRCLE_MIN_DP e NEXT_CIRCLE_MIN_DP + NEXT_CIRCLE_VAR_DP
+        private const val NEXT_CIRCLE_MIN_DP = 150
+        private const val NEXT_CIRCLE_VAR_DP = 110
+
         // Tempo do anel (aproximação) e intervalo entre os círculos.
         // Ambos diminuem conforme o combo cresce.
         private const val APPROACH_MS = 900L
@@ -126,12 +143,21 @@ class CameraFragment : Fragment() {
     private var mode = Mode.CHECKING
 
     private var container: FrameLayout? = null
-    private var placeButton: ExtendedFloatingActionButton? = null
+    private var placeButton: HorrorButton? = null
     private var statusText: TextView? = null
-    private var overlay: View? = null
+    private var hostView: View? = null
+
+    // Interface (HUD) em janelas próprias, acima do SceneView
+    private var hudTopView: View? = null
+    private var hudBottomView: View? = null
+    private var hudTopDialog: Dialog? = null
+    private var hudBottomDialog: Dialog? = null
+    private var hudBottomHeight = 0
+    private var killsText: TextView? = null
+    private var barsGroup: View? = null
 
     // Batalha
-    private var battleButton: ExtendedFloatingActionButton? = null
+    private var battleButton: HorrorButton? = null
     private var battleLayer: FrameLayout? = null
     private var battleDialog: Dialog? = null
     private var gameOverDialog: Dialog? = null
@@ -139,8 +165,8 @@ class CameraFragment : Fragment() {
     private var comboText: TextView? = null
     private var scoreText: TextView? = null
     private var linesView: LinkLinesView? = null
-    private var hpBar: ProgressBar? = null
-    private var playerHpBar: ProgressBar? = null
+    private var hpBar: HpBarView? = null
+    private var playerHpBar: HpBarView? = null
 
     private var battleActive = false
     private var monsterHp = 0
@@ -247,18 +273,8 @@ class CameraFragment : Fragment() {
             ]
 
         container = view.findViewById(R.id.sceneContainer)
-        placeButton = view.findViewById(R.id.place)
 
         createControls()
-
-        // Se o jogo já tinha acabado (0 vidas), mostra o Game Over de novo.
-        if (lives <= 0) {
-            view.post {
-                if (container != null && lives <= 0) {
-                    showGameOver()
-                }
-            }
-        }
 
         sharedViewModel =
             ViewModelProvider(requireActivity())[
@@ -297,23 +313,67 @@ class CameraFragment : Fragment() {
         checkAvailability()
     }
 
+    override fun onResume() {
+        super.onResume()
+        view?.post { refreshHud() }
+    }
+
     override fun onPause() {
         // Evita que os círculos expirem (e tirem vida) com o app em segundo plano.
         if (battleActive) {
             endBattle("Batalha pausada.")
         }
+        hideHud()
         super.onPause()
+    }
+
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+
+        if (hidden) {
+            if (battleActive) endBattle("Batalha pausada.")
+            hideHud()
+            runCatching { gameOverDialog?.dismiss() }
+            gameOverDialog = null
+        } else {
+            view?.post { refreshHud() }
+        }
+    }
+
+    /** Mostra o HUD (ou o Game Over, se as vidas acabaram). */
+    private fun refreshHud() {
+        if (container == null || isHidden) return
+
+        if (lives <= 0) {
+            showGameOver()
+        } else {
+            showHud()
+        }
     }
 
     private fun createControls() {
         val parent = container?.parent as? ViewGroup ?: return
+        val ctx = requireContext()
+        val bone = Color.rgb(240, 232, 228)
 
-        val layer = FrameLayout(requireContext())
+        hostView = parent
 
-        // Camada dos círculos. Ela NÃO fica nesta tela: é exibida numa janela
-        // própria (veja showBattleDialog), para ficar na frente do modelo 3D.
-        // Tocar nela (fora de um círculo) conta como erro.
-        battleLayer = FrameLayout(requireContext()).apply {
+        // O SceneView é desenhado por cima de qualquer View da tela, então a
+        // interface vive em janelas próprias (HUD) e os controles do XML saem.
+        requireView().findViewById<View>(R.id.place)?.visibility = View.GONE
+
+        val titleView =
+            requireView().findViewById<View>(R.id.titleImage) as? ImageView
+        val titleDrawable =
+            titleView?.drawable?.constantState?.newDrawable()?.mutate()
+
+        if (titleDrawable != null) {
+            titleView?.visibility = View.GONE
+        }
+
+        // ---------- Camada dos círculos (janela própria, veja showBattleDialog) ----------
+        // Tocar nela (fora de um círculo) conta como erro, se configurado.
+        battleLayer = FrameLayout(ctx).apply {
             setOnTouchListener { _, event ->
                 if (
                     event.actionMasked == MotionEvent.ACTION_DOWN &&
@@ -326,8 +386,8 @@ class CameraFragment : Fragment() {
             }
         }
 
-        // Linhas pontilhadas ligando os círculos numerados (fica por baixo deles)
-        linesView = LinkLinesView(requireContext()) { activeCircles }
+        // Linhas pontilhadas ligando os círculos numerados (por baixo deles)
+        linesView = LinkLinesView(ctx) { activeCircles }
 
         battleLayer?.addView(
             linesView,
@@ -337,13 +397,12 @@ class CameraFragment : Fragment() {
             )
         )
 
-        // Texto de combo
-        comboText = TextView(requireContext()).apply {
+        comboText = TextView(ctx).apply {
             visibility = View.GONE
-            textSize = 26f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.rgb(255, 213, 0))
-            setShadowLayer(8f, 0f, 0f, Color.BLACK)
+            textSize = 28f
+            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD_ITALIC)
+            setTextColor(bone)
+            setShadowLayer(16f, 0f, 0f, Color.rgb(210, 0, 25))
         }
 
         battleLayer?.addView(
@@ -358,13 +417,13 @@ class CameraFragment : Fragment() {
             }
         )
 
-        // Placar
-        scoreText = TextView(requireContext()).apply {
+        scoreText = TextView(ctx).apply {
             visibility = View.GONE
-            textSize = 18f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.WHITE)
-            setShadowLayer(8f, 0f, 0f, Color.BLACK)
+            textSize = 16f
+            typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+            letterSpacing = 0.1f
+            setTextColor(bone)
+            setShadowLayer(10f, 0f, 0f, Color.BLACK)
         }
 
         battleLayer?.addView(
@@ -379,129 +438,318 @@ class CameraFragment : Fragment() {
             }
         )
 
-        val panel = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            setBackgroundColor(Color.argb(190, 25, 30, 35))
+        // ---------- HUD superior: vidas, título e fantasmas banidos ----------
+        val topBar = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
         }
 
-        statusText = TextView(requireContext()).apply {
-            text = "Preparando visualização…"
-            textSize = 13f
-            setTextColor(Color.WHITE)
-        }
+        livesText = chip(ctx, bone)
+        killsText = chip(ctx, bone)
 
-        panel.addView(statusText)
-
-        // Vidas da partida (corações)
-        livesText = TextView(requireContext()).apply {
-            textSize = 16f
-            setTextColor(Color.rgb(255, 90, 90))
-        }
-
-        panel.addView(
+        topBar.addView(
             livesText,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(4) }
+            )
         )
 
-        updateLivesUi()
-
-        // Barra de vida do monstro (vermelha)
-        hpBar = ProgressBar(
-            requireContext(),
-            null,
-            android.R.attr.progressBarStyleHorizontal
-        ).apply {
-            visibility = View.GONE
-            max = MONSTER_MAX_HP
-            progressTintList = ColorStateList.valueOf(Color.RED)
+        if (titleDrawable != null) {
+            topBar.addView(
+                ImageView(ctx).apply {
+                    setImageDrawable(titleDrawable)
+                    adjustViewBounds = true
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                },
+                LinearLayout.LayoutParams(0, dp(36), 1f).apply {
+                    leftMargin = dp(8)
+                    rightMargin = dp(8)
+                }
+            )
+        } else {
+            topBar.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
         }
 
-        panel.addView(
-            hpBar,
+        topBar.addView(
+            killsText,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        // ---------- HUD inferior: status, barras de vida e botões ----------
+        val bottom = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, dp(12), dp(12))
+        }
+
+        val card = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(14))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(Color.argb(228, 9, 9, 13))
+                setStroke(dp(1), Color.argb(130, 193, 18, 31))
+            }
+        }
+
+        statusText = TextView(ctx).apply {
+            text = "Preparando visualização…"
+            textSize = 14f
+            typeface = Typeface.create(Typeface.SERIF, Typeface.ITALIC)
+            setTextColor(Color.rgb(226, 219, 215))
+            setLines(2)
+            ellipsize = TextUtils.TruncateAt.END
+        }
+
+        card.addView(statusText)
+
+        hpBar = HpBarView(
+            ctx,
+            Color.rgb(120, 0, 16),
+            Color.rgb(235, 20, 40)
+        ).apply { max = MONSTER_MAX_HP }
+
+        playerHpBar = HpBarView(
+            ctx,
+            Color.rgb(24, 96, 70),
+            Color.rgb(120, 245, 175)
+        ).apply { max = PLAYER_MAX_HP }
+
+        val bars = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.INVISIBLE // INVISIBLE mantém a altura do painel fixa
+        }
+
+        bars.addView(barRow(ctx, "FANTASMA", hpBar!!))
+        bars.addView(
+            barRow(ctx, "VOCÊ", playerHpBar!!),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(10)
+                ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(6) }
         )
 
-        // Barra de vida do jogador (verde)
-        playerHpBar = ProgressBar(
-            requireContext(),
-            null,
-            android.R.attr.progressBarStyleHorizontal
-        ).apply {
-            visibility = View.GONE
-            max = PLAYER_MAX_HP
-            progressTintList =
-                ColorStateList.valueOf(Color.rgb(60, 200, 90))
-        }
+        barsGroup = bars
 
-        panel.addView(
-            playerHpBar,
+        card.addView(
+            bars,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(10)
-            ).apply { topMargin = dp(4) }
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
         )
 
-        layer.addView(
-            panel,
-            FrameLayout.LayoutParams(
+        bottom.addView(
+            card,
+            LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM
-            ).apply {
-                leftMargin = dp(12)
-                rightMargin = dp(12)
-                bottomMargin = dp(85)
-            }
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         )
 
-        // Botão de batalha, ao lado do botão "Centralizar"
-        battleButton = ExtendedFloatingActionButton(requireContext()).apply {
+        placeButton = HorrorButton(ctx, primary = false).apply {
+            text = "Aguarde"
+            isEnabled = false
+        }
+
+        battleButton = HorrorButton(ctx, primary = true).apply {
             text = "Batalhar"
             isEnabled = false
             setOnClickListener {
                 if (battleActive) {
-                    endBattle("Você fugiu da batalha.")
+                    endBattle("Você fugiu… por enquanto.")
                 } else {
                     startBattle()
                 }
             }
         }
 
-        layer.addView(
+        val buttons = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        buttons.addView(placeButton, LinearLayout.LayoutParams(0, dp(50), 1f))
+        buttons.addView(
             battleButton,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP or Gravity.START
-            )
+            LinearLayout.LayoutParams(0, dp(50), 1f).apply {
+                leftMargin = dp(10)
+            }
         )
 
-        placeButton?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            alignBattleButton()
-        }
-        battleButton?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            alignBattleButton()
-        }
-
-        parent.addView(
-            layer,
-            ViewGroup.LayoutParams(
+        bottom.addView(
+            buttons,
+            LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
         )
 
-        overlay = layer
+        hudTopView = topBar
+        hudBottomView = bottom
 
-        parent.findViewById<View>(R.id.titleImage)?.bringToFront()
-        placeButton?.bringToFront()
+        updateLivesUi()
+    }
+
+    /** Cápsula escura com borda vermelha (vidas, fantasmas banidos). */
+    private fun chip(ctx: Context, textColor: Int): TextView {
+        return TextView(ctx).apply {
+            textSize = 16f
+            typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+            letterSpacing = 0.08f
+            setTextColor(textColor)
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(18).toFloat()
+                setColor(Color.argb(220, 9, 9, 13))
+                setStroke(dp(1), Color.argb(130, 193, 18, 31))
+            }
+        }
+    }
+
+    private fun barRow(ctx: Context, label: String, bar: HpBarView): View {
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        row.addView(
+            TextView(ctx).apply {
+                text = label
+                textSize = 10f
+                typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+                letterSpacing = 0.18f
+                setTextColor(Color.rgb(150, 140, 140))
+            },
+            LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.WRAP_CONTENT)
+        )
+
+        row.addView(bar, LinearLayout.LayoutParams(0, dp(9), 1f))
+
+        return row
+    }
+
+    // ------------------------------------------------------------------
+    // HUD em janelas próprias (acima do SceneView)
+    // ------------------------------------------------------------------
+
+    private fun newHudDialog(content: View): Dialog {
+        (content.parent as? ViewGroup)?.removeView(content)
+
+        val dialog = Dialog(
+            requireContext(),
+            android.R.style.Theme_Translucent_NoTitleBar
+        ).apply {
+            setContentView(
+                content,
+                ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
+            setCancelable(false)
+        }
+
+        dialog.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            addFlags(
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            )
+        }
+
+        return dialog
+    }
+
+    private fun statusBarHeight(): Int {
+        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
+    }
+
+    /**
+     * Posiciona a janela no topo ou na base da área da câmera, com o
+     * tamanho exato do conteúdo (o resto da tela continua tocável).
+     * Retorna a altura da janela.
+     */
+    private fun layoutHudWindow(
+        dialog: Dialog,
+        content: View,
+        atTop: Boolean
+    ): Int {
+        val host = hostView ?: return 0
+
+        val loc = IntArray(2)
+        host.getLocationOnScreen(loc)
+
+        if (atTop) {
+            // Evita ficar sob a barra de status.
+            val extra = (statusBarHeight() - loc[1]).coerceAtLeast(0)
+            content.setPadding(dp(12), dp(8) + extra, dp(12), dp(8))
+        }
+
+        content.measure(
+            View.MeasureSpec.makeMeasureSpec(host.width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+
+        val height = content.measuredHeight
+
+        dialog.window?.let { window ->
+            val params = window.attributes
+            params.gravity = Gravity.TOP or Gravity.START
+            params.x = loc[0]
+            params.y = if (atTop) loc[1] else loc[1] + host.height - height
+            params.width = host.width
+            params.height = height
+            window.attributes = params
+        }
+
+        return height
+    }
+
+    private fun showHud() {
+        val host = hostView ?: return
+        if (container == null || lives <= 0) return
+
+        // Ainda sem medidas: tenta de novo no próximo quadro.
+        if (host.width == 0 || host.height == 0) {
+            host.post { if (container != null) showHud() }
+            return
+        }
+
+        val top = hudTopView ?: return
+        val bottom = hudBottomView ?: return
+
+        if (hudTopDialog == null) hudTopDialog = newHudDialog(top)
+        if (hudBottomDialog == null) hudBottomDialog = newHudDialog(bottom)
+
+        hudTopDialog?.let { layoutHudWindow(it, top, atTop = true) }
+        hudBottomDialog?.let {
+            hudBottomHeight = layoutHudWindow(it, bottom, atTop = false)
+        }
+
+        runCatching { hudTopDialog?.show() }
+        runCatching { hudBottomDialog?.show() }
+    }
+
+    private fun hideHud() {
+        runCatching { hudTopDialog?.hide() }
+        runCatching { hudBottomDialog?.hide() }
+    }
+
+    private fun destroyHud() {
+        runCatching { hudTopDialog?.dismiss() }
+        runCatching { hudBottomDialog?.dismiss() }
+        hudTopDialog = null
+        hudBottomDialog = null
+        hudTopView = null
+        hudBottomView = null
     }
 
     /**
@@ -1048,23 +1296,6 @@ class CameraFragment : Fragment() {
     // Sistema de batalha com combos
     // ------------------------------------------------------------------
 
-    /** Coloca o botão de batalha ao lado direito de "Centralizar". */
-    private fun alignBattleButton() {
-        val place = placeButton ?: return
-        val battle = battleButton ?: return
-        val layer = overlay ?: return
-
-        val p = IntArray(2)
-        val l = IntArray(2)
-        place.getLocationOnScreen(p)
-        layer.getLocationOnScreen(l)
-
-        battle.translationX =
-            (p[0] - l[0] + place.width + dp(12)).toFloat()
-        battle.translationY =
-            (p[1] - l[1] + (place.height - battle.height) / 2).toFloat()
-    }
-
     private fun canBattle(): Boolean {
         return mode != Mode.CHECKING &&
                 lives > 0 &&
@@ -1076,12 +1307,12 @@ class CameraFragment : Fragment() {
     private fun updateBattleUi() {
         battleButton?.apply {
             text = if (battleActive) "Fugir" else "Batalhar"
+            setPrimary(!battleActive)
             isEnabled = battleActive || canBattle()
         }
 
-        val visibility = if (battleActive) View.VISIBLE else View.GONE
-        hpBar?.visibility = visibility
-        playerHpBar?.visibility = visibility
+        barsGroup?.visibility =
+            if (battleActive) View.VISIBLE else View.INVISIBLE
     }
 
     private fun updateComboText() {
@@ -1126,8 +1357,7 @@ class CameraFragment : Fragment() {
         showBattleDialog()
 
         statusText?.text =
-            "Toque nos círculos em ordem (1, 2, 3…) quando o anel fechar. " +
-                    "Vermelha: monstro • Verde: você."
+            "Ele está aqui. Toque nos círculos em ordem, quando o anel fechar."
 
         updateComboText()
         updateScoreText()
@@ -1180,23 +1410,74 @@ class CameraFragment : Fragment() {
 
         val patternId = ++patternCounter
 
-        var x = minX + Random.nextFloat() * (maxX - minX)
-        var y = minY + Random.nextFloat() * (maxY - minY)
+        var previous: Pair<Float, Float>? = null
 
         for (number in 1..count) {
             if (!battleActive) return
 
+            val (x, y) = pickPosition(previous, minX, maxX, minY, maxY)
+
             spawnCircle(patternId, number, x, y, radius, approach)
-
-            // Próximo círculo da sequência: perto do anterior.
-            val angle = Random.nextDouble(0.0, 2 * PI)
-            val distance = (dp(110) + Random.nextInt(dp(90))).toFloat()
-
-            x = (x + cos(angle).toFloat() * distance).coerceIn(minX, maxX)
-            y = (y + sin(angle).toFloat() * distance).coerceIn(minY, maxY)
+            previous = Pair(x, y)
 
             delay(beat)
         }
+    }
+
+    /**
+     * Escolhe uma posição afastada de todos os círculos que ainda estão
+     * na tela. Tenta várias vezes; se a tela estiver cheia, usa a
+     * posição mais afastada encontrada.
+     */
+    private fun pickPosition(
+        previous: Pair<Float, Float>?,
+        minX: Float,
+        maxX: Float,
+        minY: Float,
+        maxY: Float
+    ): Pair<Float, Float> {
+        val minGap = dp(MIN_CIRCLE_GAP_DP).toFloat()
+        val others = activeCircles.map { Pair(it.cx, it.cy) }
+
+        var best = Pair((minX + maxX) / 2f, (minY + maxY) / 2f)
+        var bestGap = -1f
+
+        for (attempt in 0 until 40) {
+            val candidate = if (previous == null) {
+                Pair(
+                    minX + Random.nextFloat() * (maxX - minX),
+                    minY + Random.nextFloat() * (maxY - minY)
+                )
+            } else {
+                val angle = Random.nextDouble(0.0, 2 * PI)
+                val distance = (
+                        dp(NEXT_CIRCLE_MIN_DP) +
+                                Random.nextInt(dp(NEXT_CIRCLE_VAR_DP))
+                        ).toFloat()
+
+                Pair(
+                    (previous.first + cos(angle).toFloat() * distance)
+                        .coerceIn(minX, maxX),
+                    (previous.second + sin(angle).toFloat() * distance)
+                        .coerceIn(minY, maxY)
+                )
+            }
+
+            val gap = others.minOfOrNull { other ->
+                val dx = other.first - candidate.first
+                val dy = other.second - candidate.second
+                sqrt(dx * dx + dy * dy)
+            } ?: Float.MAX_VALUE
+
+            if (gap >= minGap) return candidate
+
+            if (gap > bestGap) {
+                bestGap = gap
+                best = candidate
+            }
+        }
+
+        return best
     }
 
     private fun spawnCircle(
@@ -1338,7 +1619,7 @@ class CameraFragment : Fragment() {
         playerHpBar?.progress = playerHp
 
         statusText?.text =
-            "O monstro atacou! Sua vida: $playerHp / $PLAYER_MAX_HP"
+            "O fantasma atacou! Sua alma: $playerHp / $PLAYER_MAX_HP"
 
         monsterAttackEffect()
 
@@ -1358,65 +1639,101 @@ class CameraFragment : Fragment() {
         } else {
             val restantes = if (lives == 1) "1 vida" else "$lives vidas"
             endBattle(
-                "O monstro te derrotou! Restam $restantes. " +
+                "O fantasma te alcançou… Restam $restantes. " +
                         "Toque em Batalhar para tentar de novo."
             )
         }
     }
 
     private fun updateLivesUi() {
-        livesText?.text =
-            "Vidas: " + "❤".repeat(lives) + "♡".repeat(PLAYER_LIVES - lives)
+        val hearts = SpannableStringBuilder()
+
+        for (i in 0 until PLAYER_LIVES) {
+            val start = hearts.length
+            hearts.append("♥")
+            hearts.setSpan(
+                ForegroundColorSpan(
+                    if (i < lives) Color.rgb(225, 25, 45)
+                    else Color.argb(90, 255, 255, 255)
+                ),
+                start,
+                hearts.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            if (i < PLAYER_LIVES - 1) hearts.append(" ")
+        }
+
+        livesText?.text = hearts
+        killsText?.text = "☠ $monstersDefeated"
     }
 
-    /** Tela de Game Over (em janela própria, acima do SceneView). */
+    /** Tela de Game Over (em janela própria, acima de tudo). */
     private fun showGameOver() {
         if (gameOverDialog?.isShowing == true) return
 
+        hideHud()
+
         val ctx = requireContext()
+        val bone = Color.rgb(240, 232, 228)
 
         val content = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.argb(235, 10, 10, 15))
-            setPadding(dp(24), dp(24), dp(24), dp(24))
+            setPadding(dp(28), dp(28), dp(28), dp(28))
+            background = GradientDrawable().apply {
+                gradientType = GradientDrawable.RADIAL_GRADIENT
+                gradientRadius = resources.displayMetrics.heightPixels * 0.75f
+                setGradientCenter(0.5f, 0.42f)
+                colors = intArrayOf(Color.rgb(78, 0, 10), Color.rgb(4, 0, 2))
+            }
             isClickable = true // bloqueia toques no que está atrás
         }
 
         content.addView(
             TextView(ctx).apply {
                 text = "GAME OVER"
-                textSize = 44f
+                textSize = 46f
                 gravity = Gravity.CENTER
-                setTypeface(typeface, Typeface.BOLD)
-                setTextColor(Color.rgb(230, 50, 50))
-                setShadowLayer(12f, 0f, 0f, Color.BLACK)
+                typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+                letterSpacing = 0.12f
+                setTextColor(Color.rgb(215, 25, 45))
+                setShadowLayer(28f, 0f, 0f, Color.rgb(255, 0, 30))
+            }
+        )
+
+        content.addView(
+            View(ctx).apply {
+                setBackgroundColor(Color.argb(170, 193, 18, 31))
+            },
+            LinearLayout.LayoutParams(dp(120), dp(2)).apply {
+                topMargin = dp(16)
             }
         )
 
         content.addView(
             TextView(ctx).apply {
-                text = "Você perdeu todas as vidas.\n" +
-                        "Monstros derrotados: $monstersDefeated"
-                textSize = 18f
+                text = "O fantasma levou todas as suas vidas.\n\n" +
+                        "Fantasmas banidos: $monstersDefeated"
+                textSize = 17f
                 gravity = Gravity.CENTER
-                setTextColor(Color.WHITE)
+                typeface = Typeface.create(Typeface.SERIF, Typeface.ITALIC)
+                setTextColor(bone)
+                alpha = 0.9f
             },
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(16) }
+            ).apply { topMargin = dp(18) }
         )
 
         content.addView(
-            ExtendedFloatingActionButton(ctx).apply {
-                text = "Jogar novamente"
+            HorrorButton(ctx, primary = true).apply {
+                text = "Tentar de novo"
                 setOnClickListener { restartGame() }
             },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(32) }
+            LinearLayout.LayoutParams(dp(230), dp(54)).apply {
+                topMargin = dp(36)
+            }
         )
 
         val dialog = Dialog(
@@ -1446,8 +1763,9 @@ class CameraFragment : Fragment() {
         monstersDefeated = 0
         updateLivesUi()
 
-        statusText?.text = "Nova partida! Toque em Batalhar."
+        statusText?.text = "Você voltou… Toque em Batalhar."
         updateBattleUi()
+        showHud()
     }
 
     private fun hitMonster(damage: Int) {
@@ -1457,7 +1775,7 @@ class CameraFragment : Fragment() {
         monsterHp = (monsterHp - damage).coerceAtLeast(0)
         hpBar?.progress = monsterHp
         statusText?.text =
-            "Acertou! -$damage • Monstro: $monsterHp / $MONSTER_MAX_HP"
+            "Acertou! -$damage • Fantasma: $monsterHp / $MONSTER_MAX_HP"
 
         if (monsterHp == 0) {
             defeatMonster(node)
@@ -1502,8 +1820,13 @@ class CameraFragment : Fragment() {
 
         monstersDefeated++
 
+        // Matar o monstro devolve todas as vidas.
+        lives = PLAYER_LIVES
+        updateLivesUi()
+
         statusText?.text =
-            "Monstro derrotado! Pontos: $score • Maior combo: $maxCombo"
+            "Fantasma banido! Suas vidas voltaram. " +
+                    "Pontos: $score • Maior combo: $maxCombo"
 
         battleJob = viewLifecycleOwner.lifecycleScope.launch {
             for (i in 10 downTo 0) {
@@ -1570,7 +1893,7 @@ class CameraFragment : Fragment() {
      */
     private fun showBattleDialog() {
         val layerView = battleLayer ?: return
-        val host = overlay ?: return
+        val host = hostView ?: return
 
         if (battleDialog?.isShowing == true) return
 
@@ -1609,7 +1932,8 @@ class CameraFragment : Fragment() {
             params.x = loc[0]
             params.y = loc[1]
             params.width = host.width
-            params.height = (host.height - dp(190)).coerceAtLeast(dp(200))
+            params.height =
+                (host.height - hudBottomHeight - dp(4)).coerceAtLeast(dp(200))
             attributes = params
         }
 
@@ -1765,11 +2089,11 @@ class CameraFragment : Fragment() {
 
         clearScene()
 
-        overlay?.let {
-            (it.parent as? ViewGroup)?.removeView(it)
-        }
+        destroyHud()
 
-        overlay = null
+        hostView = null
+        killsText = null
+        barsGroup = null
         statusText = null
         placeButton = null
         battleButton = null
@@ -1823,23 +2147,23 @@ private class TargetCircle(
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.argb(235, 255, 105, 180)
+        color = Color.argb(240, 128, 6, 24)
     }
 
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = radiusPx * 0.1f
-        color = Color.WHITE
+        color = Color.rgb(236, 226, 220)
     }
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = radiusPx * 0.12f
-        color = Color.argb(230, 255, 255, 255)
+        color = Color.argb(235, 236, 226, 220)
     }
 
     private val numberPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
+        color = Color.rgb(246, 238, 232)
         textAlign = Paint.Align.CENTER
         textSize = radiusPx * 1.0f
         typeface = Typeface.DEFAULT_BOLD
@@ -1926,7 +2250,7 @@ private class LinkLinesView(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = resources.displayMetrics.density * 3f
-        color = Color.argb(170, 255, 255, 255)
+        color = Color.argb(150, 220, 40, 55)
         pathEffect = DashPathEffect(floatArrayOf(18f, 14f), 0f)
     }
 
@@ -1940,6 +2264,144 @@ private class LinkLinesView(
             if (a.patternId == b.patternId && b.number == a.number + 1) {
                 canvas.drawLine(a.cx, a.cy, b.cx, b.cy, paint)
             }
+        }
+    }
+}
+
+
+/**
+ * Botão da interface com visual sombrio: cantos arredondados, borda
+ * vermelha (principal) ou cinza (secundário), texto em maiúsculas.
+ */
+private class HorrorButton(
+    context: Context,
+    primary: Boolean
+) : TextView(context) {
+
+    private val density = resources.displayMetrics.density
+    private var primaryStyle = primary
+
+    init {
+        gravity = Gravity.CENTER
+        setTextColor(Color.rgb(242, 234, 230))
+        textSize = 14f
+        typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+        letterSpacing = 0.14f
+        isClickable = true
+        isFocusable = true
+        setPadding(
+            (16 * density).toInt(),
+            (12 * density).toInt(),
+            (16 * density).toInt(),
+            (12 * density).toInt()
+        )
+        applyStyle()
+    }
+
+    fun setPrimary(value: Boolean) {
+        if (primaryStyle != value) {
+            primaryStyle = value
+            applyStyle()
+        }
+    }
+
+    private fun applyStyle() {
+        val shape = GradientDrawable().apply {
+            cornerRadius = 14 * density
+
+            if (primaryStyle) {
+                orientation = GradientDrawable.Orientation.TOP_BOTTOM
+                colors = intArrayOf(
+                    Color.rgb(196, 20, 38),
+                    Color.rgb(108, 6, 20)
+                )
+                setStroke((1.5f * density).toInt(), Color.argb(210, 255, 72, 88))
+            } else {
+                setColor(Color.argb(228, 16, 16, 22))
+                setStroke((1.5f * density).toInt(), Color.argb(150, 190, 190, 200))
+            }
+        }
+
+        background = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+            shape,
+            null
+        )
+    }
+
+    override fun setText(text: CharSequence?, type: TextView.BufferType?) {
+        super.setText(text?.toString()?.uppercase(), type)
+    }
+
+    override fun setEnabled(enabled: Boolean) {
+        super.setEnabled(enabled)
+        alpha = if (enabled) 1f else 0.4f
+    }
+}
+
+/** Barra de vida arredondada, com degradê e animação suave. */
+private class HpBarView(
+    context: Context,
+    private val colorStart: Int,
+    private val colorEnd: Int
+) : View(context) {
+
+    var max: Int = 1
+        set(value) {
+            field = value.coerceAtLeast(1)
+            invalidate()
+        }
+
+    var progress: Int = 0
+        set(value) {
+            field = value
+            animateTo(value.toFloat())
+        }
+
+    private var shown = 0f
+    private var animator: ValueAnimator? = null
+
+    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(200, 38, 38, 44)
+    }
+
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rect = RectF()
+
+    private fun animateTo(target: Float) {
+        animator?.cancel()
+
+        animator = ValueAnimator.ofFloat(shown, target).apply {
+            duration = 220L
+            addUpdateListener {
+                shown = it.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        fillPaint.shader = LinearGradient(
+            0f, 0f, w.toFloat(), 0f,
+            colorStart, colorEnd,
+            Shader.TileMode.CLAMP
+        )
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val radius = h / 2f
+
+        rect.set(0f, 0f, w, h)
+        canvas.drawRoundRect(rect, radius, radius, trackPaint)
+
+        val fraction = (shown / max).coerceIn(0f, 1f)
+
+        if (fraction > 0f) {
+            rect.set(0f, 0f, maxOf(h, w * fraction), h)
+            canvas.drawRoundRect(rect, radius, radius, fillPaint)
         }
     }
 }
